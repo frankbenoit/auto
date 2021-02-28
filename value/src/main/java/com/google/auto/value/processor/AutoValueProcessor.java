@@ -19,6 +19,7 @@ import static com.google.auto.common.MoreElements.getLocalAndInheritedMethods;
 import static com.google.auto.value.processor.ClassNames.AUTO_VALUE_NAME;
 import static com.google.common.collect.Sets.difference;
 import static com.google.common.collect.Sets.intersection;
+import static java.util.Comparator.naturalOrder;
 import static java.util.stream.Collectors.joining;
 import static java.util.stream.Collectors.toList;
 
@@ -36,7 +37,6 @@ import com.google.common.collect.Iterables;
 import java.lang.annotation.Annotation;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
@@ -136,7 +136,7 @@ public class AutoValueProcessor extends AutoValueOrOneOfProcessor {
     AutoValueExtension.IncrementalExtensionType incrementalType =
         extensions.stream()
             .map(e -> e.incrementalType(processingEnv))
-            .min(Comparator.naturalOrder())
+            .min(naturalOrder())
             .orElse(AutoValueExtension.IncrementalExtensionType.ISOLATING);
     builder.add(OMIT_IDENTIFIERS_OPTION).addAll(optionsFor(incrementalType));
     for (AutoValueExtension extension : extensions) {
@@ -164,15 +164,6 @@ public class AutoValueProcessor extends AutoValueOrOneOfProcessor {
 
   @Override
   void processType(TypeElement type) {
-    if (!hasAnnotationMirror(type, AUTO_VALUE_NAME)) {
-      // This shouldn't happen unless the compilation environment is buggy,
-      // but it has happened in the past and can crash the compiler.
-      errorReporter()
-          .abortWithError(
-              type,
-              "[AutoValueCompilerBug] annotation processor for @AutoValue was invoked with a type"
-                  + " that does not have that annotation; this is probably a compiler bug");
-    }
     if (type.getKind() != ElementKind.CLASS) {
       errorReporter()
           .abortWithError(type, "[AutoValueNotClass] @AutoValue only applies to classes");
@@ -216,7 +207,7 @@ public class AutoValueProcessor extends AutoValueOrOneOfProcessor {
     Optional<BuilderSpec.Builder> builder = builderSpec.getBuilder();
     ImmutableSet<ExecutableElement> toBuilderMethods;
     if (builder.isPresent()) {
-      toBuilderMethods = builder.get().toBuilderMethods(typeUtils(), abstractMethods);
+      toBuilderMethods = builder.get().toBuilderMethods(typeUtils(), type, abstractMethods);
     } else {
       toBuilderMethods = ImmutableSet.of();
     }

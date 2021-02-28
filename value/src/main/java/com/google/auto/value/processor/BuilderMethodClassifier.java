@@ -350,11 +350,21 @@ class BuilderMethodClassifier {
   }
 
   /**
-   * Classifies a method given that it has one argument. Currently, a method with one argument can
-   * only be a setter, meaning that it must look like {@code foo(T)} or {@code setFoo(T)}, where the
-   * {@code AutoValue} class has a property called {@code foo} of type {@code T}.
+   * Classifies a method given that it has one argument. A method with one argument can be:
+   *
+   * <ul>
+   *   <li>a setter, meaning that it looks like {@code foo(T)} or {@code setFoo(T)}, where the
+   *       {@code AutoValue} class has a property called {@code foo} of type {@code T};
+   *   <li>a property builder with one argument, meaning it looks like {@code
+   *       ImmutableSortedSet.Builder<V> foosBuilder(Comparator<V>)}, where the {@code AutoValue}
+   *       class has a property called {@code foos} with a type whose builder can be made with an
+   *       argument of the given type.
+   * </ul>
    */
   private void classifyMethodOneArg(ExecutableElement method) {
+    if (classifyPropertyBuilderOneArg(method)) {
+      return;
+    }
     String methodName = method.getSimpleName().toString();
     Map<String, ExecutableElement> propertyNameToGetter = getterToPropertyName.inverse();
     String propertyName = null;
@@ -363,19 +373,32 @@ class BuilderMethodClassifier {
     if (valueGetter != null) {
       propertyNameToSetters = propertyNameToUnprefixedSetters;
       propertyName = methodName;
-    } else if (valueGetter == null && methodName.startsWith("set") && methodName.length() > 3) {
+    } else if (methodName.startsWith("set") && methodName.length() > 3) {
       propertyNameToSetters = propertyNameToPrefixedSetters;
       propertyName = PropertyNames.decapitalizeLikeJavaBeans(methodName.substring(3));
       valueGetter = propertyNameToGetter.get(propertyName);
       if (valueGetter == null) {
         // If our property is defined by a getter called getOAuth() then it is called "OAuth"
-        // because of Introspector.decapitalize. Therefore we want Introspector.decapitalize to
-        // be used for the setter too, so that you can write setOAuth(x). Meanwhile if the property
-        // is defined by a getter called oAuth() then it is called "oAuth", but you would still
-        // expect to be able to set it using setOAuth(x). Hence the second try using a decapitalize
-        // method without the quirky two-leading-capitals rule.
+        // because of JavaBeans rules. Therefore we want JavaBeans rules to be used for the setter
+        // too, so that you can write setOAuth(x). Meanwhile if the property is defined by a getter
+        // called oAuth() then it is called "oAuth", but you would still expect to be able to set it
+        // using setOAuth(x). Hence the second try using a decapitalize method without the quirky
+        // two-leading-capitals rule.
         propertyName = PropertyNames.decapitalizeNormally(methodName.substring(3));
         valueGetter = propertyNameToGetter.get(propertyName);
+      }
+    } else {
+      // We might also have an unprefixed setter, so the getter is called OAuth() or getOAuth() and
+      // the setter is called oAuth(x), where again JavaBeans rules imply that it should be called
+      // OAuth(x). Iterating over the properties here is a bit clunky but this case should be
+      // unusual.
+      propertyNameToSetters = propertyNameToUnprefixedSetters;
+      for (Map.Entry<String, ExecutableElement> entry : propertyNameToGetter.entrySet()) {
+        if (methodName.equals(PropertyNames.decapitalizeNormally(entry.getKey()))) {
+          propertyName = entry.getKey();
+          valueGetter = entry.getValue();
+          break;
+        }
       }
     }
     if (valueGetter == null || propertyNameToSetters == null) {
@@ -402,6 +425,38 @@ class BuilderMethodClassifier {
             method, "Setter methods must return %s%s", builderType, typeParamsString());
       }
     }
+  }
+
+  /**
+   * Classifies a method given that it has one argument and is a property builder with a parameter,
+   * like {@code ImmutableSortedSet.Builder<String> foosBuilder(Comparator<String>)}.
+   *
+   * @param method A method to classify
+   * @return true if method has been classified successfully
+   */
+  private boolean classifyPropertyBuilderOneArg(ExecutableElement method) {
+    String methodName = method.getSimpleName().toString();
+    if (!methodName.endsWith("Builder")) {
+      return false;
+    }
+    String property = methodName.substring(0, methodName.length() - "Builder".length());
+    if (!getterToPropertyName.containsValue(property)) {
+      return false;
+    }
+    PropertyBuilderClassifier propertyBuilderClassifier =
+        new PropertyBuilderClassifier(
+            errorReporter,
+            typeUtils,
+            elementUtils,
+            this,
+            getterToPropertyName,
+            getterToPropertyType,
+            eclipseHack);
+    Optional<PropertyBuilder> maybePropertyBuilder =
+        propertyBuilderClassifier.makePropertyBuilder(method, property);
+    maybePropertyBuilder.ifPresent(
+        propertyBuilder -> propertyNameToPropertyBuilder.put(property, propertyBuilder));
+    return maybePropertyBuilder.isPresent();
   }
 
   // A frequent source of problems is where the JavaBeans conventions have been followed for

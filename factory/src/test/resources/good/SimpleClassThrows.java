@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Google LLC
+ * Copyright 2020 Google LLC
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,19 +16,9 @@
 package tests;
 
 import com.google.auto.factory.AutoFactory;
-import com.google.auto.factory.Provided;
-import java.util.Map;
-import org.checkerframework.checker.nullness.compatqual.NullableDecl;
-import org.checkerframework.checker.nullness.compatqual.NullableType;
+import java.io.IOException;
 
 @AutoFactory
-final class CheckerFrameworkNullable {
-
-  CheckerFrameworkNullable(
-      @NullableDecl String nullableDecl,
-      @Provided @NullableDecl String providedNullableDecl,
-      @NullableType String nullableType,
-      @Provided @NullableType String providedNullableType,
-      Map.@NullableType Entry<?, ?> nestedNullableType,
-      @Provided Map.@NullableType Entry<?, ?> providedNestedNullableType) {}
+final class SimpleClassThrows {
+  SimpleClassThrows() throws IOException, InterruptedException {}
 }
