@@ -510,13 +510,14 @@ public class AutoFactoryProcessorTest {
   @Test
   public void nullAnnotationJdt() {
     JavaFileObject file = JavaFileObjects.forResource("good/NullAnnotationJdt.java");
-    assertAbout(javaSource())
-        .that(file)
-        .withCompilerOptions("-AnullAnnotations=JDT")
-        .processedWith(new AutoFactoryProcessor())
-        .compilesWithoutError()
-        .and()
-        .generatesSources(loadExpectedFile("expected/NullAnnotationJdtFactory.java"));
+    Compilation compilation = javac
+        .withOptions("-AnullAnnotations=JDT")
+        .compile(file);
+
+    assertThat(compilation).succeededWithoutWarnings();
+    assertThat(compilation)
+        .generatedSourceFile("tests.NullAnnotationJdtFactory")
+        .hasSourceEquivalentTo(loadExpectedFile("expected/NullAnnotationJdtFactory.java"));
   }
 
   private JavaFileObject loadExpectedFile(String resourceName) {
