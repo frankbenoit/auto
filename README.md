@@ -4,6 +4,15 @@
 
 A collection of source code generators for [Java][java].
 
+## This fork (frankbenoit)
+
+This fork adds modification to the auto-factory that I need for Eclipse based projects.
+1. The APT argument `-AnullAnnotations=JDT`. This causes that generated factories are annotated with `@NonNullByDefault`, and take care about arguments having `@Nullable`.
+Fixing [#881](https://github.com/google/auto/issues/881)
+2. The maven build generates a `-annotations.jar` for the project dependency
+3. The maven build generates a `-jar-with-dependencies.jar` to have a single jar to configure in the Eclipse settings (.factorypath).
+Fixing [890](https://github.com/google/auto/issues/890)
+
 ## Auto‽
 
 [Java][java] is full of code that is mechanical, repetitive, typically untested
