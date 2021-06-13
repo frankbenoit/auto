@@ -21,6 +21,7 @@ import static com.google.auto.common.MoreElements.getPackage;
 import static com.google.auto.common.MoreElements.isAnnotationPresent;
 import static com.google.auto.value.processor.ClassNames.AUTO_VALUE_PACKAGE_NAME;
 import static com.google.auto.value.processor.ClassNames.COPY_ANNOTATIONS_NAME;
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static com.google.common.collect.Sets.union;
 import static java.util.stream.Collectors.joining;
@@ -56,6 +57,7 @@ import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.Set;
 import java.util.function.Predicate;
+import java.util.stream.IntStream;
 import javax.annotation.processing.AbstractProcessor;
 import javax.annotation.processing.ProcessingEnvironment;
 import javax.annotation.processing.RoundEnvironment;
@@ -82,11 +84,12 @@ import javax.tools.Diagnostic;
 import javax.tools.JavaFileObject;
 
 /**
- * Shared code between AutoValueProcessor and AutoOneOfProcessor.
+ * Shared code between {@link AutoValueProcessor}, {@link AutoOneOfProcessor}, and {@link
+ * AutoBuilderProcessor}.
  *
  * @author emcmanus@google.com (Éamonn McManus)
  */
-abstract class AutoValueOrOneOfProcessor extends AbstractProcessor {
+abstract class AutoValueishProcessor extends AbstractProcessor {
   private final String annotationClassName;
 
   /**
@@ -96,7 +99,7 @@ abstract class AutoValueOrOneOfProcessor extends AbstractProcessor {
    */
   private final List<String> deferredTypeNames = new ArrayList<>();
 
-  AutoValueOrOneOfProcessor(String annotationClassName) {
+  AutoValueishProcessor(String annotationClassName) {
     this.annotationClassName = annotationClassName;
   }
 
@@ -149,30 +152,26 @@ abstract class AutoValueOrOneOfProcessor extends AbstractProcessor {
   public static class Property {
     private final String name;
     private final String identifier;
-    private final ExecutableElement method;
     private final String type;
-    private final ImmutableList<String> fieldAnnotations;
-    private final ImmutableList<String> methodAnnotations;
+    private final TypeMirror typeMirror;
     private final Optional<String> nullableAnnotation;
     private final Optionalish optional;
+    private final String getter;
 
     Property(
         String name,
         String identifier,
-        ExecutableElement method,
         String type,
-        ImmutableList<String> fieldAnnotations,
-        ImmutableList<String> methodAnnotations,
-        Optional<String> nullableAnnotation) {
+        TypeMirror typeMirror,
+        Optional<String> nullableAnnotation,
+        String getter) {
       this.name = name;
       this.identifier = identifier;
-      this.method = method;
       this.type = type;
-      this.fieldAnnotations = fieldAnnotations;
-      this.methodAnnotations = methodAnnotations;
+      this.typeMirror = typeMirror;
       this.nullableAnnotation = nullableAnnotation;
-      TypeMirror propertyType = method.getReturnType();
-      this.optional = Optionalish.createIfOptional(propertyType);
+      this.optional = Optionalish.createIfOptional(typeMirror);
+      this.getter = getter;
     }
 
     /**
@@ -196,16 +195,8 @@ abstract class AutoValueOrOneOfProcessor extends AbstractProcessor {
       return name;
     }
 
-    /**
-     * Returns the name of the getter method for this property as defined by the {@code @AutoValue}
-     * class. For property {@code foo}, this will be {@code foo} or {@code getFoo} or {@code isFoo}.
-     */
-    public String getGetter() {
-      return method.getSimpleName().toString();
-    }
-
     public TypeMirror getTypeMirror() {
-      return method.getReturnType();
+      return typeMirror;
     }
 
     public String getType() {
@@ -213,23 +204,7 @@ abstract class AutoValueOrOneOfProcessor extends AbstractProcessor {
     }
 
     public TypeKind getKind() {
-      return method.getReturnType().getKind();
-    }
-
-    /**
-     * Returns the annotations (in string form) that should be applied to the property's field
-     * declaration.
-     */
-    public List<String> getFieldAnnotations() {
-      return fieldAnnotations;
-    }
-
-    /**
-     * Returns the annotations (in string form) that should be applied to the property's method
-     * implementation.
-     */
-    public List<String> getMethodAnnotations() {
-      return methodAnnotations;
+      return typeMirror.getKind();
     }
 
     /**
@@ -257,13 +232,67 @@ abstract class AutoValueOrOneOfProcessor extends AbstractProcessor {
       return nullableAnnotation.isPresent();
     }
 
+    /**
+     * Returns the name of the getter method for this property as defined by the {@code @AutoValue}
+     * or {@code @AutoBuilder} class. For property {@code foo}, this will be {@code foo} or {@code
+     * getFoo} or {@code isFoo}. For AutoValue, this will also be the name of a getter method in a
+     * builder; in the case of AutoBuilder it will only be that and may be null.
+     */
+    public String getGetter() {
+      return getter;
+    }
+  }
+
+  /** A {@link Property} that corresponds to an abstract getter method in the source. */
+  public static class GetterProperty extends Property {
+    private final ExecutableElement method;
+    private final ImmutableList<String> fieldAnnotations;
+    private final ImmutableList<String> methodAnnotations;
+
+    GetterProperty(
+        String name,
+        String identifier,
+        ExecutableElement method,
+        String type,
+        ImmutableList<String> fieldAnnotations,
+        ImmutableList<String> methodAnnotations,
+        Optional<String> nullableAnnotation) {
+      super(
+          name,
+          identifier,
+          type,
+          method.getReturnType(),
+          nullableAnnotation,
+          method.getSimpleName().toString());
+      this.method = method;
+      this.fieldAnnotations = fieldAnnotations;
+      this.methodAnnotations = methodAnnotations;
+    }
+
+    /**
+     * Returns the annotations (in string form) that should be applied to the property's field
+     * declaration.
+     */
+    public List<String> getFieldAnnotations() {
+      return fieldAnnotations;
+    }
+
+    /**
+     * Returns the annotations (in string form) that should be applied to the property's method
+     * implementation.
+     */
+    public List<String> getMethodAnnotations() {
+      return methodAnnotations;
+    }
+
     public String getAccess() {
       return SimpleMethod.access(method);
     }
 
     @Override
     public boolean equals(Object obj) {
-      return obj instanceof Property && ((Property) obj).method.equals(method);
+      return obj instanceof GetterProperty
+          && ((GetterProperty) obj).method.equals(method);
     }
 
     @Override
@@ -383,7 +412,7 @@ abstract class AutoValueOrOneOfProcessor extends AbstractProcessor {
         (propertyMethod, returnType) -> {
           String propertyType =
               TypeEncoder.encodeWithAnnotations(
-                  returnType, getExcludedAnnotationTypes(propertyMethod));
+                  returnType, ImmutableList.of(), getExcludedAnnotationTypes(propertyMethod));
           String propertyName = methodToPropertyName.get(propertyMethod);
           String identifier = methodToIdentifier.get(propertyMethod);
           ImmutableList<String> fieldAnnotations =
@@ -393,7 +422,7 @@ abstract class AutoValueOrOneOfProcessor extends AbstractProcessor {
           ImmutableList<String> methodAnnotations = annotationStrings(methodAnnotationMirrors);
           Optional<String> nullableAnnotation = nullableAnnotationForMethod(propertyMethod);
           Property p =
-              new Property(
+              new GetterProperty(
                   propertyName,
                   identifier,
                   propertyMethod,
@@ -411,11 +440,11 @@ abstract class AutoValueOrOneOfProcessor extends AbstractProcessor {
     return props.build();
   }
 
-  /** Defines the template variables that are shared by AutoValue and AutoOneOf. */
+  /** Defines the template variables that are shared by AutoValue, AutoOneOf, and AutoBuilder. */
   final void defineSharedVarsForType(
       TypeElement type,
       ImmutableSet<ExecutableElement> methods,
-      AutoValueOrOneOfTemplateVars vars) {
+      AutoValueishTemplateVars vars) {
     vars.pkg = TypeSimplifier.packageNameOf(type);
     vars.origClass = TypeSimplifier.classNameOf(type);
     vars.simpleClassName = TypeSimplifier.simpleNameOf(vars.origClass);
@@ -423,7 +452,7 @@ abstract class AutoValueOrOneOfProcessor extends AbstractProcessor {
         generatedAnnotation(elementUtils(), processingEnv.getSourceVersion())
             .map(annotation -> TypeEncoder.encode(annotation.asType()))
             .orElse("");
-    vars.formalTypes = TypeEncoder.formalTypeParametersString(type);
+    vars.formalTypes = TypeEncoder.typeParametersString(type.getTypeParameters());
     vars.actualTypes = TypeSimplifier.actualTypeParametersString(type);
     vars.wildcardTypes = wildcardTypeParametersString(type);
     vars.annotations = copiedClassAnnotations(type);
@@ -432,7 +461,9 @@ abstract class AutoValueOrOneOfProcessor extends AbstractProcessor {
     vars.toString = methodsToGenerate.containsKey(ObjectMethod.TO_STRING);
     vars.equals = methodsToGenerate.containsKey(ObjectMethod.EQUALS);
     vars.hashCode = methodsToGenerate.containsKey(ObjectMethod.HASH_CODE);
-    vars.equalsParameterType = equalsParameterType(methodsToGenerate);
+    Optional<AnnotationMirror> nullable = Nullables.nullableMentionedInMethods(methods);
+    vars.equalsParameterType = equalsParameterType(methodsToGenerate, nullable);
+    vars.serialVersionUID = getSerialVersionUID(type);
   }
 
   /** Returns the spelling to be used in the generated code for the given list of annotations. */
@@ -454,7 +485,7 @@ abstract class AutoValueOrOneOfProcessor extends AbstractProcessor {
   static String generatedClassName(TypeElement type, String prefix) {
     String name = type.getSimpleName().toString();
     while (type.getEnclosingElement() instanceof TypeElement) {
-      type = (TypeElement) type.getEnclosingElement();
+      type = MoreElements.asType(type.getEnclosingElement());
       name = type.getSimpleName() + "_" + name;
     }
     String pkg = TypeSimplifier.packageNameOf(type);
@@ -566,12 +597,9 @@ abstract class AutoValueOrOneOfProcessor extends AbstractProcessor {
   }
 
   private static OptionalInt nullableAnnotationIndex(List<? extends AnnotationMirror> annotations) {
-    for (int i = 0; i < annotations.size(); i++) {
-      if (isNullable(annotations.get(i))) {
-        return OptionalInt.of(i);
-      }
-    }
-    return OptionalInt.empty();
+    return IntStream.range(0, annotations.size())
+        .filter(i -> isNullable(annotations.get(i)))
+        .findFirst();
   }
 
   private static boolean isNullable(AnnotationMirror annotation) {
@@ -583,21 +611,19 @@ abstract class AutoValueOrOneOfProcessor extends AbstractProcessor {
    * includes {@code isFoo} methods if they return {@code boolean}. This corresponds to JavaBeans
    * conventions.
    */
-  static ImmutableSet<ExecutableElement> prefixedGettersIn(Iterable<ExecutableElement> methods) {
-    ImmutableSet.Builder<ExecutableElement> getters = ImmutableSet.builder();
-    for (ExecutableElement method : methods) {
-      String name = method.getSimpleName().toString();
-      // Note that getfoo() (without a capital) is still a getter.
-      boolean get = name.startsWith("get") && !name.equals("get");
-      boolean is =
-          name.startsWith("is")
-              && !name.equals("is")
-              && method.getReturnType().getKind() == TypeKind.BOOLEAN;
-      if (get || is) {
-        getters.add(method);
-      }
-    }
-    return getters.build();
+  static ImmutableSet<ExecutableElement> prefixedGettersIn(Collection<ExecutableElement> methods) {
+    return methods.stream()
+        .filter(AutoValueishProcessor::isPrefixedGetter)
+        .collect(toImmutableSet());
+  }
+
+  static boolean isPrefixedGetter(ExecutableElement method) {
+    String name = method.getSimpleName().toString();
+    // Note that getfoo() (without a capital) is still a getter.
+    return (name.startsWith("get") && !name.equals("get"))
+        || (name.startsWith("is")
+            && !name.equals("is")
+            && method.getReturnType().getKind() == TypeKind.BOOLEAN);
   }
 
   /**
@@ -611,7 +637,7 @@ abstract class AutoValueOrOneOfProcessor extends AbstractProcessor {
    * anyway, so the special behaviour is not useful, and of course it behaves poorly with examples
    * like {@code OAuth}.
    */
-  private static String nameWithoutPrefix(String name) {
+  static String nameWithoutPrefix(String name) {
     if (name.startsWith("get")) {
       name = name.substring(3);
     } else {
@@ -622,27 +648,33 @@ abstract class AutoValueOrOneOfProcessor extends AbstractProcessor {
   }
 
   /**
-   * Checks that, if the given {@code @AutoValue} or {@code @AutoOneOf} class is nested, it is
-   * static and not private. This check is not necessary for correctness, since the generated code
-   * would not compile if the check fails, but it produces better error messages for the user.
+   * Checks that, if the given {@code @AutoValue}, {@code @AutoOneOf}, or {@code @AutoBuilder} class
+   * is nested, it is static and not private. This check is not necessary for correctness, since the
+   * generated code would not compile if the check fails, but it produces better error messages for
+   * the user.
    */
   final void checkModifiersIfNested(TypeElement type) {
+    checkModifiersIfNested(type, type, simpleAnnotationName);
+  }
+
+  final void checkModifiersIfNested(TypeElement type, TypeElement reportedType, String what) {
     ElementKind enclosingKind = type.getEnclosingElement().getKind();
     if (enclosingKind.isClass() || enclosingKind.isInterface()) {
       if (type.getModifiers().contains(Modifier.PRIVATE)) {
         errorReporter.abortWithError(
-            type, "[AutoValuePrivate] @%s class must not be private", simpleAnnotationName);
+            reportedType, "[%sPrivate] @%s class must not be private", simpleAnnotationName, what);
       } else if (Visibility.effectiveVisibilityOfElement(type).equals(Visibility.PRIVATE)) {
         // The previous case, where the class itself is private, is much commoner so it deserves
         // its own error message, even though it would be caught by the test here too.
         errorReporter.abortWithError(
-            type,
-            "[AutoValueInPrivate] @%s class must not be nested in a private class",
-            simpleAnnotationName);
+            reportedType,
+            "[%sInPrivate] @%s class must not be nested in a private class",
+            simpleAnnotationName,
+            what);
       }
       if (!type.getModifiers().contains(Modifier.STATIC)) {
         errorReporter.abortWithError(
-            type, "[AutoValueInner] Nested @%s class must be static", simpleAnnotationName);
+            reportedType, "[%sInner] Nested @%s class must be static", simpleAnnotationName, what);
       }
     }
     // In principle type.getEnclosingElement() could be an ExecutableElement (for a class
@@ -693,8 +725,8 @@ abstract class AutoValueOrOneOfProcessor extends AbstractProcessor {
       ObjectMethod override = objectMethodToOverride(method);
       boolean canGenerate =
           method.getModifiers().contains(Modifier.ABSTRACT)
-              || isJavaLangObject((TypeElement) method.getEnclosingElement());
-      if (!override.equals(ObjectMethod.NONE) && canGenerate) {
+               || isJavaLangObject(MoreElements.asType(method.getEnclosingElement()));
+     if (!override.equals(ObjectMethod.NONE) && canGenerate) {
         methodsToGenerate.put(override, method);
       }
     }
@@ -705,14 +737,25 @@ abstract class AutoValueOrOneOfProcessor extends AbstractProcessor {
    * Returns the encoded parameter type of the {@code equals(Object)} method that is to be
    * generated, or an empty string if the method is not being generated. The parameter type includes
    * any type annotations, for example {@code @Nullable}.
+   *
+   * @param methodsToGenerate the Object methods that are being generated
+   * @param nullable the type of a {@code @Nullable} type annotation that we have found, if any
    */
-  static String equalsParameterType(Map<ObjectMethod, ExecutableElement> methodsToGenerate) {
+  static String equalsParameterType(
+      Map<ObjectMethod, ExecutableElement> methodsToGenerate, Optional<AnnotationMirror> nullable) {
     ExecutableElement equals = methodsToGenerate.get(ObjectMethod.EQUALS);
     if (equals == null) {
       return ""; // this will not be referenced because no equals method will be generated
     }
     TypeMirror parameterType = equals.getParameters().get(0).asType();
-    return TypeEncoder.encodeWithAnnotations(parameterType);
+    // Add @Nullable if we know one and the parameter doesn't already have one.
+    // The @Nullable we add will be a type annotation, but if the parameter already has @Nullable
+    // then that might be a type annotation or an annotation on the parameter.
+    ImmutableList<AnnotationMirror> extraAnnotations =
+        nullable.isPresent() && !nullableAnnotationFor(equals, parameterType).isPresent()
+            ? ImmutableList.of(nullable.get())
+            : ImmutableList.of();
+    return TypeEncoder.encodeWithAnnotations(parameterType, extraAnnotations, ImmutableSet.of());
   }
 
   /**
@@ -833,8 +876,9 @@ abstract class AutoValueOrOneOfProcessor extends AbstractProcessor {
   }
 
   /**
-   * Returns a string like {@code "1234L"} if {@code type instanceof Serializable} and defines
-   * {@code serialVersionUID = 1234L}; otherwise {@code ""}.
+   * Returns a string like {@code "private static final long serialVersionUID = 1234L"} if {@code
+   * type instanceof Serializable} and defines {@code serialVersionUID = 1234L}; otherwise {@code
+   * ""}.
    */
   final String getSerialVersionUID(TypeElement type) {
     TypeMirror serializable = elementUtils().getTypeElement(Serializable.class.getName()).asType();
@@ -846,7 +890,7 @@ abstract class AutoValueOrOneOfProcessor extends AbstractProcessor {
           if (field.getModifiers().containsAll(Arrays.asList(Modifier.STATIC, Modifier.FINAL))
               && field.asType().getKind() == TypeKind.LONG
               && value != null) {
-            return value + "L";
+            return "private static final long serialVersionUID = " + value + "L;";
           } else {
             errorReporter.reportError(
                 field, "serialVersionUID must be a static final long compile-time constant");

@@ -36,8 +36,10 @@
 
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <auto-service.version>1.0</auto-service.version>
+    <auto-value.version>1.8.1</auto-value.version>
     <java.version>1.8</java.version>
-    <guava.version>30.1-jre</guava.version>
+    <guava.version>30.1.1-jre</guava.version>
     <truth.version>1.1.2</truth.version>
   </properties>
 
@@ -69,34 +71,21 @@
     <dependency>
       <groupId>com.google.auto</groupId>
       <artifactId>auto-common</artifactId>
-      <version>0.11</version>
+      <version>1.0</version>
     </dependency>
     <dependency>
       <groupId>com.google.auto.value</groupId>
       <artifactId>auto-value-annotations</artifactId>
-      <version>1.7.4</version>
-    </dependency>
-    <dependency>
-      <groupId>com.google.auto.value</groupId>
-      <artifactId>auto-value</artifactId>
-      <version>1.7.4</version>
-      <scope>provided</scope>
+      <version>${auto-value.version}</version>
     </dependency>
     <dependency>
       <groupId>com.google.auto.service</groupId>
-      <artifactId>auto-service</artifactId>
-      <version>1.0-rc7</version>
-      <scope>provided</scope>
+      <artifactId>auto-service-annotations</artifactId>
+      <version>${auto-service.version}</version>
     </dependency>
     <dependency>
       <groupId>net.ltgt.gradle.incap</groupId>
       <artifactId>incap</artifactId>
-      <version>0.3</version>
-      <scope>provided</scope>
-    </dependency>
-    <dependency>
-      <groupId>net.ltgt.gradle.incap</groupId>
-      <artifactId>incap-processor</artifactId>
       <version>0.3</version>
       <scope>provided</scope>
     </dependency>
@@ -164,14 +153,39 @@
           <compilerArgument>-Xlint:all</compilerArgument>
           <showWarnings>true</showWarnings>
           <showDeprecation>true</showDeprecation>
+          <annotationProcessorPaths>
+            <path>
+              <groupId>com.google.auto.service</groupId>
+              <artifactId>auto-service</artifactId>
+              <version>${auto-service.version}</version>
+            </path>
+            <path>
+              <groupId>com.google.auto.value</groupId>
+              <artifactId>auto-value</artifactId>
+              <version>${auto-value.version}</version>
+            </path>
+            <path>
+              <groupId>net.ltgt.gradle.incap</groupId>
+              <artifactId>incap-processor</artifactId>
+              <version>0.3</version>
+            </path>
+          </annotationProcessorPaths>
         </configuration>
         <dependencies>
           <dependency>
             <groupId>org.codehaus.plexus</groupId>
             <artifactId>plexus-java</artifactId>
-            <version>1.0.6</version>
+            <version>1.0.7</version>
           </dependency>
         </dependencies>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <version>2.22.2</version>
+        <configuration>
+          <argLine>${test.jvm.flags}</argLine>
+        </configuration>
       </plugin>
       <plugin>
         <artifactId>maven-jar-plugin</artifactId>
@@ -246,4 +260,15 @@
       </plugin>
     </plugins>
   </build>
+  <profiles>
+    <profile>
+      <id>open-modules</id>
+      <activation>
+        <jdk>[9,)</jdk>
+      </activation>
+      <properties>
+        <test.jvm.flags>--add-opens=jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED</test.jvm.flags>
+      </properties>
+    </profile>
+  </profiles>
 </project>

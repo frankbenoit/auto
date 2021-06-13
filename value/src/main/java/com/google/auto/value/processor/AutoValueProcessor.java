@@ -64,8 +64,8 @@ import net.ltgt.gradle.incap.IncrementalAnnotationProcessorType;
 @AutoService(Processor.class)
 @SupportedAnnotationTypes(AUTO_VALUE_NAME)
 @IncrementalAnnotationProcessor(IncrementalAnnotationProcessorType.DYNAMIC)
-public class AutoValueProcessor extends AutoValueOrOneOfProcessor {
-  private static final String OMIT_IDENTIFIERS_OPTION = "com.google.auto.value.OmitIdentifiers";
+public class AutoValueProcessor extends AutoValueishProcessor {
+  static final String OMIT_IDENTIFIERS_OPTION = "com.google.auto.value.OmitIdentifiers";
 
   // We moved MemoizeExtension to a different package, which had an unexpected effect:
   // now if an old version of AutoValue is in the class path, ServiceLoader can pick up both the
@@ -239,13 +239,14 @@ public class AutoValueProcessor extends AutoValueOrOneOfProcessor {
     boolean extensionsPresent = !applicableExtensions.isEmpty();
     validateMethods(type, abstractMethods, toBuilderMethods, propertyMethods, extensionsPresent);
 
-    String finalSubclass = generatedSubclassName(type, 0);
+    String finalSubclass = TypeSimplifier.simpleNameOf(generatedSubclassName(type, 0));
     AutoValueTemplateVars vars = new AutoValueTemplateVars();
-    vars.finalSubclass = TypeSimplifier.simpleNameOf(finalSubclass);
     vars.types = processingEnv.getTypeUtils();
     vars.identifiers = !processingEnv.getOptions().containsKey(OMIT_IDENTIFIERS_OPTION);
     defineSharedVarsForType(type, methods, vars);
     defineVarsForType(type, vars, toBuilderMethods, propertyMethodsAndTypes, builder);
+    vars.builtType = vars.origClass + vars.actualTypes;
+    vars.build = "new " + finalSubclass + vars.actualTypes;
 
     // If we've encountered problems then we might end up invoking extensions with inconsistent
     // state. Anyway we probably don't want to generate code which is likely to provoke further
@@ -267,7 +268,7 @@ public class AutoValueProcessor extends AutoValueOrOneOfProcessor {
     text = Reformatter.fixup(text);
     writeSourceFile(subclass, text, type);
     GwtSerialization gwtSerialization = new GwtSerialization(gwtCompatibility, processingEnv, type);
-    gwtSerialization.maybeWriteGwtSerializer(vars);
+    gwtSerialization.maybeWriteGwtSerializer(vars, finalSubclass);
   }
 
   // Invokes each of the given extensions to generate its subclass, and returns the number of
@@ -425,19 +426,20 @@ public class AutoValueProcessor extends AutoValueOrOneOfProcessor {
     // We can't use ImmutableList.toImmutableList() for obscure Google-internal reasons.
     vars.toBuilderMethods =
         ImmutableList.copyOf(toBuilderMethods.stream().map(SimpleMethod::new).collect(toList()));
+    vars.toBuilderConstructor = !vars.toBuilderMethods.isEmpty();
     ImmutableListMultimap<ExecutableElement, AnnotationMirror> annotatedPropertyFields =
         propertyFieldAnnotationMap(type, propertyMethods);
     ImmutableListMultimap<ExecutableElement, AnnotationMirror> annotatedPropertyMethods =
         propertyMethodAnnotationMap(type, propertyMethods);
     vars.props =
         propertySet(propertyMethodsAndTypes, annotatedPropertyFields, annotatedPropertyMethods);
-    vars.serialVersionUID = getSerialVersionUID(type);
     // Check for @AutoValue.Builder and add appropriate variables if it is present.
     maybeBuilder.ifPresent(
         builder -> {
           ImmutableBiMap<ExecutableElement, String> methodToPropertyName =
               propertyNameToMethodMap(propertyMethods).inverse();
-          builder.defineVars(vars, methodToPropertyName);
+          builder.defineVarsForAutoValue(vars, methodToPropertyName);
+          vars.builderName = "Builder";
           vars.builderAnnotations = copiedClassAnnotations(builder.builderType());
         });
   }
